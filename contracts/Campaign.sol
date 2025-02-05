@@ -3,62 +3,127 @@ pragma solidity >=0.7.0 <0.9.0;
 
 import "./DonationToken.sol";
 import "./Proposal.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract Campaign {
+contract Campaign is ReentrancyGuard {
     DonationToken public tokenContract;
-    uint256 public nextTokenId = 1;
+    Proposal public proposalContract;
+    address public owner;
     uint256 public totalDonations;
     uint256 public targetAmount;
-    address public owner;
-    Proposal public proposalContract;
+    bool public isActive = true;
+    bool public fundsDistributed = false;
 
-    constructor(address _tokenContract, address _proposalContract) {
-        tokenContract = DonationToken(_tokenContract);
-        owner = msg.sender;
-        proposalContract = Proposal(_proposalContract);
-        proposalContract.createProposal();
-        proposalContract.createProposal();
-        proposalContract.createProposal();
-    }
+    mapping(address => uint256) public pendingWithdrawals;
+
+    event DonationReceived(address indexed donor, uint256 amount, uint256 tokenId);
+    event CampaignClosed();
+    event FundsDistributed();
+    event FundsWithdrawn(address indexed beneficiary, uint256 amount);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Only the owner can call this function");
         _;
     }
 
-    function donate() external payable {
+    modifier campaignActive() {
+        require(isActive, "Campaign is not active");
+        _;
+    }
+
+    constructor(address _tokenContract, address _proposalContract, address[] memory _beneficiaries) {
+        require(_tokenContract != address(0), "Invalid token contract address");
+        require(_proposalContract != address(0), "Invalid proposal contract address");
+        require(_beneficiaries.length == 3, "Must provide exactly 3 beneficiaries");
+        
+        tokenContract = DonationToken(_tokenContract);
+        proposalContract = Proposal(_proposalContract);
+        owner = msg.sender;
+
+        proposalContract.createProposal(_beneficiaries[0]);
+        proposalContract.createProposal(_beneficiaries[1]);
+        proposalContract.createProposal(_beneficiaries[2]);
+    }
+    function getDonationForToken(uint256 tokenId) external view returns (uint256) {
+        return tokenContract.getDonationAmount(tokenId);
+    }
+    function getTokensByOwner(address _owner) external view returns (uint256[] memory) {
+        return tokenContract.getTokensByOwner(_owner);
+    }
+    function isBeneficiary(address beneficiary) public view returns (bool) {
+        for (uint256 i = 0; i < proposalContract.getProposalCount(); i++) {
+            if (proposalContract.getProposalBeneficiary(i) == beneficiary) {
+                return true;
+            }
+        }
+        return false;
+    }
+    function isFundsDistributed() external view returns (bool) {
+        return fundsDistributed;
+    }
+    function setTargetAmount(uint256 _newTarget) external onlyOwner {
+        require(_newTarget > 0, "Target must be greater than zero");
+        require(_newTarget > totalDonations, "New target must be greater than donations");
+        targetAmount = _newTarget;
+    }
+    function getTargetAmount() external view returns (uint256) {
+        return targetAmount;
+    }
+    function getTotalDonations() external view returns (uint256) {
+        return totalDonations;
+    }
+
+    function donate() external payable campaignActive {
         require(msg.value > 0, "Donation amount must be greater than zero");
         totalDonations += msg.value;
-        tokenContract.issueToken(nextTokenId, msg.value);
-        nextTokenId += 1;
+        uint256 tokenId = tokenContract.issueToken(msg.sender, msg.value);
+        emit DonationReceived(msg.sender, msg.value, tokenId);
+    }
+    function isCampaignActive() external view returns (bool) {
+        return isActive;
+    }
+    function stopCampaign() external onlyOwner {
+        require(totalDonations >= targetAmount, "Target amount not reached yet");
+        isActive = false;
+        emit CampaignClosed();
     }
 
-    function buyToken(uint256 _tokenId) external payable {
-        (uint256 id, uint256 amount, address donor) = tokenContract.viewToken(_tokenId);
-        require(id != 0, "Token with this ID does not exist");
-        require(msg.value >= amount, "Insufficient funds");
+    function distributeFunds() external onlyOwner nonReentrant {
+        require(!isActive, "Campaign must be stopped before distributing funds");
+        require(!fundsDistributed, "Funds have already been distributed");
 
-        tokenContract.transferToken(msg.sender, _tokenId);
-        payable(donor).transfer(msg.value);
+        uint256 totalVotes = proposalContract.getTotalVotes();
+        require(totalVotes > 0, "No valid votes cast");
+
+        for (uint256 i = 0; i < proposalContract.getProposalCount(); i++) {
+            uint256 percentage = proposalContract.getProposalPercentage(i);
+            uint256 amountToSend = (totalDonations * percentage) / 100;
+            address beneficiary = proposalContract.getProposalBeneficiary(i);
+            pendingWithdrawals[beneficiary] += amountToSend;
+        }
+
+        fundsDistributed = true;
+        emit FundsDistributed();
     }
 
-    function viewDonationToken(uint256 _tokenId) external view returns (uint256, uint256, address) {
-        return tokenContract.viewToken(_tokenId);
-    }
+     function withdrawFunds() external nonReentrant {
+        require(fundsDistributed, "Funds have not been distributed"); 
+        require(isBeneficiary(msg.sender), "You are not a beneficiary");
 
-    function viewAllDonationTokens() external view returns (DonationToken.DonationAsset[] memory) {
-        return tokenContract.viewAllTokens();
-    }
+        uint256 amount = pendingWithdrawals[msg.sender];
+        require(amount > 0, "No funds to withdraw");
+        require(address(this).balance >= amount, "Insufficient contract balance");
 
-    function setTargetAmount(uint256 _targetAmount) external onlyOwner {
-        targetAmount = _targetAmount;
+        pendingWithdrawals[msg.sender] = 0;
+
+        (bool success, ) = payable(msg.sender).call{value: amount}("");
+        require(success, "Withdrawal failed");
+
+        emit FundsWithdrawn(msg.sender, amount);
     }
 
     function getDonationPercentages() external view returns (uint256[] memory percentages) {
-        uint256 totalVotes = 0;
-        for (uint256 i = 1; i <= 3; i++) {
-            totalVotes += proposalContract.getProposalFunds(i);  // Sum of donations for all proposals
-        }
+        uint256 totalVotes = proposalContract.getTotalVotes();
 
         uint256[] memory _percentages = new uint256[](3);
 
@@ -67,10 +132,11 @@ contract Campaign {
         }
 
         // Calculate the percentage of donations for each proposal
-        for (uint256 i = 1; i <= 3; i++) {
-            _percentages[i - 1] = (proposalContract.getProposalFunds(i) * 100) / totalVotes;  // Calculate percentage
+        for (uint256 i = 0; i < 3; i++) {
+            _percentages[i] = proposalContract.getProposalPercentage(i);  // Calculate percentage
         }
 
         return _percentages;
     }
+
 }

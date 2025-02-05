@@ -1,97 +1,69 @@
 // SPDX-License-Identifier: GPL-3.0
-
 pragma solidity >=0.7.0 <0.9.0;
 
-contract DonationToken {
-    struct DonationAsset {
-        uint256 id;
-        uint256 amount; // Donation amount
-        address donor;  // Address of the donor
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract DonationToken is ERC721, Ownable {
+    uint256 private _nextTokenId = 1;
+    mapping(uint256 => bool) public usedForVoting;
+    mapping(uint256 => uint256) public donationAmounts; 
+    mapping(address => uint256[]) private ownedTokens;  
+
+    constructor() ERC721("DonationToken", "DNT") Ownable(msg.sender) {}
+
+    event TokenIssued(address indexed to, uint256 tokenId, uint256 amount);
+
+    function issueToken(address to, uint256 amount) external returns (uint256) {
+        uint256 tokenId = _nextTokenId;
+        _nextTokenId++;
+        donationAmounts[tokenId] = amount;  
+        _mint(to, tokenId);
+        ownedTokens[to].push(tokenId); 
+        usedForVoting[tokenId] = false;
+        emit TokenIssued(to, tokenId, amount); 
+        return tokenId;
     }
 
-    uint256 public nbtokens; 
-    uint256[] public tokenIds;
+    function burn(address _ownerToken, uint256 tokenId) external {
+        require(usedForVoting[tokenId], "Token must be used for voting before burn"); 
+        
+        emit TokenIssued(msg.sender, tokenId, donationAmounts[tokenId]);
 
-    mapping(uint256 => DonationAsset) public donationAssets;
-    mapping(address => uint256) public donorTokenCount; // Count of tokens held by each donor
-    mapping(address => mapping(address => uint256)) private _allowances; // Allowances for token transfers
+        _removeTokenFromOwnerList(_ownerToken, tokenId);
 
-    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
+        _burn(tokenId);
+        
+        delete donationAmounts[tokenId]; 
+    }
+    function hasVoted(uint256 tokenId) external view returns (bool) {
+        return usedForVoting[tokenId];
+    }
+    function setUsedForVoting(uint256 tokenId) external {
+        require(!usedForVoting[tokenId], "Token already used for voting");
 
-    modifier onlyOwner(address owner, uint256 _tokenId) {
-        require(donationAssets[_tokenId].donor == owner, "You are not the owner of this token");
-        _;
+        usedForVoting[tokenId] = true;
+    }
+    function getNextTokenId() external view returns (uint256) {
+        return _nextTokenId;
     }
 
-    function issueToken(uint256 _id, uint256 _amount) external {
-        require(donationAssets[_id].id == 0, "Token with this ID already exists");
-
-        donationAssets[_id] = DonationAsset({
-            id: _id,
-            amount: _amount,
-            donor: msg.sender
-        });
-
-        donorTokenCount[msg.sender]++;
-        tokenIds.push(_id);
-        nbtokens++;
+    function getTokensByOwner(address _owner) external view returns (uint256[] memory) {
+        return ownedTokens[_owner]; 
     }
 
-    function transferToken(address _to, uint256 _tokenId) external onlyOwner(msg.sender, _tokenId) {
-        require(_to != address(0), "Invalid address");
-        require(donorTokenCount[donationAssets[_tokenId].donor] > 0, "Owner has no tokens");
-
-        donationAssets[_tokenId].donor = _to;
-        donorTokenCount[msg.sender]--;
-        donorTokenCount[_to]++;
-
-        emit Transfer(msg.sender, _to, _tokenId);
+    function getDonationAmount(uint256 tokenId) external view returns (uint256) {
+        return donationAmounts[tokenId];  
     }
 
-    function viewToken(uint256 _tokenId) external view returns (uint256, uint256, address) {
-        DonationAsset memory asset = donationAssets[_tokenId];
-        return (asset.id, asset.amount, asset.donor);
-    }
-
-    function totalSupply() external view returns (uint256) {
-        return nbtokens;
-    }
-
-    function balanceOf(address _donor) external view returns (uint256) {
-        return donorTokenCount[_donor];
-    }
-
-    function approve(address _spender, uint256 _value) external returns (bool) {
-        _allowances[msg.sender][_spender] = _value;
-        emit Approval(msg.sender, _spender, _value);
-        return true;
-    }
-
-    function transferFrom(address _from, address _to, uint256 _value) external returns (bool) {
-        require(_from != address(0), "Invalid address");
-        require(_to != address(0), "Invalid address");
-        require(_value <= donorTokenCount[_from], "Insufficient balance");
-        require(_value <= _allowances[_from][msg.sender], "Allowance exceeded");
-
-        donorTokenCount[_from] -= _value;
-        donorTokenCount[_to] += _value;
-        _allowances[_from][msg.sender] -= _value;
-
-        emit Transfer(_from, _to, _value);
-
-        return true;
-    }
-
-    function viewAllTokens() external view returns (DonationAsset[] memory) {
-        DonationAsset[] memory tokens = new DonationAsset[](nbtokens);
-        for (uint256 i = 0; i < tokenIds.length; i++) {
-            tokens[i] = donationAssets[tokenIds[i]];
+    function _removeTokenFromOwnerList(address _owner, uint256 tokenId) internal {
+        uint256 length = ownedTokens[_owner].length;
+        for (uint256 i = 0; i < length; i++) {
+            if (ownedTokens[_owner][i] == tokenId) {
+                ownedTokens[_owner][i] = ownedTokens[_owner][length - 1]; 
+                ownedTokens[_owner].pop(); 
+                return;
+            }
         }
-        return tokens;
-    }
-
-    function isTokenOwner(address _owner, uint256 _tokenId) external view returns (bool) {
-        return donationAssets[_tokenId].donor == _owner;
-    }
+    }   
 }

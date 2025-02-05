@@ -1,29 +1,12 @@
 import React, { useState } from 'react';
+import { ethers } from 'ethers';
 
-function Login({ accountData, onLogin }) {
-    const [address, setAddress] = useState('');
-    const [error, setError] = useState('');
-
-
-
-   function handleLogin() {
-        // Check if address exists in accountData
-       if (accountData.includes(address)) {
-           onLogin(address);
-        } else {
-            setError('Address not found.');
-        }
-    }
-
+const Login = ({ onLogin }) => {
     return (
         <div>
-            <div>
-                <input type="text" value={address} onChange={(e) => setAddress(e.target.value)} />
-            </div>
-            <button onClick={handleLogin}>Login</button>
-            {error && <p style={{ color: 'red' }}>{error}</p>}
+            <button onClick={onLogin}>Connect with MetaMask</button>
         </div>
     );
-}
+};
 
 export default Login;
